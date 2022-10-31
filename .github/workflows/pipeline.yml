@@ -1,0 +1,103 @@
+name: Deploy pipeline
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize]
+
+jobs:
+  check_and_deploy:
+    runs-on: ubuntu-18.04
+    strategy:
+      fail-fast: true
+      matrix: 
+        node-version: [12.x]
+    
+    steps:
+      - name: Set up Node.js version ${{ matrix.node-version }}
+        uses: actions/setup-node@v1
+        with:
+          node-version: ${{ matrix.node-version }}
+      
+      - name: Checkout 
+        uses: actions/checkout@v2
+
+      - name: Set up cache
+        uses: actions/cache@v1
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-modules-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-modules-
+            ${{ runner.os }}-
+
+      - name: Install packages
+        run: npm run install:build
+      
+      - name: Lint
+        run: npm run lint
+        
+      - name: Build client
+        run: npm run build:client
+      
+      - name: Bump version and push tag
+        if: github.event_name == 'push' && !contains(toJson(join(github.event.commits.*.message)), '#skip')
+        uses: anothrNick/github-tag-action@eca2b69f9e2c24be7decccd0f15fdb1ea5906598
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
+
+      - name: Deploy
+        if: github.event_name == 'push' && !contains(toJson(join(github.event.commits.*.message)), '#skip')
+        uses: akhileshns/heroku-deploy@79ef2ae4ff9b897010907016b268fd0f88561820
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY}}
+          heroku_app_name: "boiling-peak-04070"
+          heroku_email: "mikevedsted@gmail.com"
+          healthcheck: "https://boiling-peak-04070.herokuapp.com/health"
+          checkstring: "ok"
+          rollbackonhealthcheckfailed: true    
+ 
+      - name: Notify on slack
+        uses: 8398a7/action-slack@45986a1c69e93353648c176ce49eecddebebf64e
+        with:
+          status: ${{ job.status }}
+          fields: eventName, commit, repo, author, took, workflow, message
+          custom_payload: |
+            {
+              attachments: [{
+                color: '${{ job.status }}' === 'success' ? 'good' : '${{ job.status }}' === 'failure' ? 'danger' : 'warning',
+                title: '${{ job.status }}' === 'success' ? 'New version has been deployed' : `Deployment of ${process.env.AS_COMMIT} failed`,
+                text: `Process was triggered by ${process.env.AS_EVENT_NAME} to ${process.env.AS_REPO} authored by ${process.env.AS_AUTHOR} and took ${process.env.AS_TOOK}`,
+                fields: '${{ job.status }}' === 'success' ? [] : [{
+                  title: 'Job',
+                  value: `${process.env.AS_WORKFLOW}`,
+                },
+                {
+                  title: 'Repo',
+                  value: `${process.env.AS_REPO}`,
+                },
+                {
+                  title: 'Commit',
+                  value: `${process.env.AS_COMMIT}`,
+                },
+                {
+                  title: 'took',
+                  value: `${process.env.AS_TOOK}`,
+                },
+                {
+                  title: 'message',
+                  value: `${process.env.AS_MESSAGE}`,
+                },
+                {
+                  title: 'author',
+                  value: `${process.env.AS_AUTHOR}`,
+                }]
+              }]
+            }     
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: always()
